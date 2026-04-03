@@ -28,15 +28,66 @@ sudo chmod 4750 lgsh
 
 ## 配置
 
-修改源码中的 `LGSH_BASE` 宏可更改基础目录路径（默认：`/home/lgsh`）。
+修改源码中的宏可更改配置：
+
+- `LGSH_BASE` - 基础目录路径（默认：`/home/lgsh`）
+- `DEFAULT_PATH` - 默认 PATH（默认：`/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin:/snap/bin`）
 
 ### 目录结构
 
 ```
 /home/lgsh/                    # 基础目录 (LGSH_BASE)
 ├── .config/
-│   └── hosts                  # 自定义 hosts 文件（绑定挂载到 /etc/hosts）
+│   ├── hosts                  # 自定义 hosts（可选，挂载到 /etc/hosts）
+│   └── resolv.conf            # 自定义 DNS（可选，挂载到 /etc/resolv.conf）
+├── .local/bin/                # 用户自定义脚本（自动加入 PATH）
+├── .nvm/versions/node/        # Node.js 版本（自动检测最新版）
+├── miniconda3/                # Conda 环境
+├── tools/
+│   ├── ndk/                   # Android NDK（自动检测最新版）
+│   ├── build-tools/           # Android build-tools（自动检测最新版）
+│   ├── platform-tools/        # Android platform-tools
+│   ├── cmdline-tools/latest/  # Android cmdline-tools
+│   └── cmake/                 # CMake（自动检测最新版）
 └── <用户名>_<目录名>/         # 用户工作空间（按会话创建）
+```
+
+## 环境变量
+
+程序自动设置以下环境变量：
+
+| 变量 | 说明 |
+|------|------|
+| `HOME` | `/home/lgsh` |
+| `USER` | `lg` |
+| `TZ` | `America/Los_Angeles`（自动处理夏令时） |
+| `NVM_DIR` | `/home/lgsh/.nvm` |
+| `NVM_BIN` | 最新 Node.js 的 bin 目录 |
+| `NVM_INC` | 最新 Node.js 的 include 目录 |
+| `VIRTUAL_ENV` | `/home/lgsh/miniconda3` |
+| `ANDROID_NDK_HOME` | 最新 NDK 目录 |
+| `NDK_ROOT` | 最新 NDK 目录 |
+| `NDK_PROJECT_PATH` | 最新 NDK 目录 |
+| `PWD` | 当前工作目录（映射后的路径） |
+| `PATH` | 包含所有工具目录 |
+
+### PATH 顺序
+
+```
+/home/lgsh/miniconda3/bin
+/home/lgsh/.nvm/versions/node/<最新版>/bin
+/home/lgsh/tools/ndk/<最新版>
+/home/lgsh/tools/ndk/<最新版>/toolchains/llvm-prebuilt/linux-x86_64/bin
+/home/lgsh/tools/build-tools/<最新版>
+/home/lgsh/tools/platform-tools
+/home/lgsh/tools/cmdline-tools/latest/bin
+/home/lgsh/tools/cmake/<最新版>/bin
+/home/lgsh/.local/bin
+/usr/local/cuda/bin
+/usr/local/bin
+/usr/bin
+/bin
+/snap/bin
 ```
 
 ## 使用方法
@@ -44,13 +95,22 @@ sudo chmod 4750 lgsh
 从 `$HOME` 的子目录中运行：
 
 ```sh
-# 默认：在隔离环境中启动 tmux
+# 默认：启动 tmux（自动 attach 或 create session）
 lgsh
 
-# 运行指定程序
-lgsh /bin/bash
-lgsh /usr/bin/vim file.txt
+# 运行指定程序（支持 PATH 搜索，无需全路径）
+lgsh bash
+lgsh vim file.txt
+lgsh python
 ```
+
+### tmux session 管理
+
+默认模式下，程序会自动管理 tmux session：
+
+- session 名称：`<用户名>_<目录名>`（从工作目录提取）
+- 如果 session 已存在 → `tmux attach`
+- 如果 session 不存在 → `tmux new -s <名称>`
 
 ## 工作原理
 
@@ -69,13 +129,21 @@ lgsh /usr/bin/vim file.txt
    - 应用 UID/GID 映射：调用者 ID → 目标 ID（来自 `/home/lgsh` 的所有权）
    - 挂载到 `/home/lgsh/<用户名>_<目录名>`
 
-4. **环境设置**
-   - 绑定挂载自定义 hosts 文件到 `/etc/hosts`
-   - 降权为目标 UID/GID
-   - 设置 `HOME=/home/lgsh`
-   - 切换到映射后的目录
+4. **配置挂载**
+   - 可选绑定挂载 `/home/lgsh/.config/hosts` → `/etc/hosts`
+   - 可选绑定挂载 `/home/lgsh/.config/resolv.conf` → `/etc/resolv.conf`
 
-5. **执行程序**
+5. **目录切换与降权**
+   - 切换到映射后的目录（root 权限下）
+   - 设置 `$PWD` 环境变量
+   - 降权为目标 UID/GID
+
+6. **环境设置**
+   - 设置 HOME、USER、TZ 等环境变量
+   - 动态检测工具版本并设置相关环境变量
+   - 构建 PATH
+
+7. **执行程序**
    - 运行指定程序或默认的 tmux
 
 ## 安全措施
