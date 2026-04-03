@@ -68,6 +68,8 @@ struct mount_attr {
 
 /* ========== Helper macros ========== */
 #define LGSH_BASE "/home/lgsh"
+#define DEFAULT_PATH "/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin:/snap/bin"
+
 #define IDMAPLEN 4096
 #define STRLITERALLEN(x) (sizeof(""x"") - 1)
 #define INTTYPE_TO_STRLEN(type) \
@@ -542,8 +544,8 @@ static int create_mount_namespace(void)
 	return 0;
 }
 
-/* Bind mount hosts file */
-static int bind_mount_hosts(const char *source, const char *target)
+/* Bind mount file (optional, skip if source doesn't exist) */
+static int bind_mount_file(const char *source, const char *target)
 {
 	struct stat statbuf;
 	int fd;
@@ -557,7 +559,7 @@ static int bind_mount_hosts(const char *source, const char *target)
 		close(fd);
 
 	if (mount(source, target, "none", MS_BIND, NULL) < 0)
-		return syserror("cannot bind mount hosts: %s -> %s", source, target);
+		return syserror("cannot bind mount: %s -> %s", source, target);
 
 	return 0;
 }
@@ -624,6 +626,118 @@ static int setup_idmapped_mount(const char *source, const char *target,
 	return 0;
 }
 
+/* ========== Environment setup ========== */
+
+/* Get latest version from directory (sorted alphabetically, last entry) */
+static int get_latest_version(const char *base_path, char *version_out, size_t max_len)
+{
+	DIR *dir;
+	struct dirent *entry;
+	char latest[256] = "";
+
+	dir = opendir(base_path);
+	if (!dir)
+		return -1;
+
+	while ((entry = readdir(dir)) != NULL) {
+		if (entry->d_name[0] == '.')
+			continue;
+		if (strcmp(entry->d_name, latest) > 0)
+			strncpy(latest, entry->d_name, sizeof(latest) - 1);
+	}
+	closedir(dir);
+
+	if (latest[0] == '\0')
+		return -1;
+
+	strncpy(version_out, latest, max_len - 1);
+	version_out[max_len - 1] = '\0';
+	return 0;
+}
+
+static void setup_environment(void)
+{
+	char path_buf[PATH_MAX * 8];
+	char nvm_version[64];
+	char ndk_version[64];
+	char build_tools_version[64];
+	char cmake_version[64];
+	char nvm_bin[PATH_MAX];
+	char nvm_inc[PATH_MAX];
+	char ndk_path[PATH_MAX];
+
+	/* USER: set to 'lg' (the lgsh user) */
+	setenv("USER", "lg", 1);
+	setenv("TZ", "America/Los_Angeles", 1);
+
+	/* NVM environment - detect version */
+	if (get_latest_version(LGSH_BASE "/.nvm/versions/node", nvm_version, sizeof(nvm_version)) == 0) {
+		setenv("NVM_DIR", LGSH_BASE "/.nvm", 1);
+		snprintf(nvm_bin, sizeof(nvm_bin), LGSH_BASE "/.nvm/versions/node/%s/bin", nvm_version);
+		snprintf(nvm_inc, sizeof(nvm_inc), LGSH_BASE "/.nvm/versions/node/%s/include", nvm_version);
+		setenv("NVM_BIN", nvm_bin, 1);
+		setenv("NVM_INC", nvm_inc, 1);
+	}
+
+	/* Miniconda environment */
+	setenv("VIRTUAL_ENV", LGSH_BASE "/miniconda3", 1);
+
+	/* NDK environment - detect version */
+	if (get_latest_version(LGSH_BASE "/tools/ndk", ndk_version, sizeof(ndk_version)) == 0) {
+		snprintf(ndk_path, sizeof(ndk_path), LGSH_BASE "/tools/ndk/%s", ndk_version);
+		setenv("ANDROID_NDK_HOME", ndk_path, 1);
+		setenv("NDK_ROOT", ndk_path, 1);
+		setenv("NDK_PROJECT_PATH", ndk_path, 1);
+	}
+
+	/* Build PATH with detected versions */
+	path_buf[0] = '\0';
+
+	/* Miniconda */
+	snprintf(path_buf + strlen(path_buf), sizeof(path_buf) - strlen(path_buf),
+		LGSH_BASE "/miniconda3/bin:");
+
+	/* NVM */
+	if (nvm_version[0])
+		snprintf(path_buf + strlen(path_buf), sizeof(path_buf) - strlen(path_buf),
+			LGSH_BASE "/.nvm/versions/node/%s/bin:", nvm_version);
+
+	/* NDK */
+	if (ndk_version[0])
+		snprintf(path_buf + strlen(path_buf), sizeof(path_buf) - strlen(path_buf),
+			LGSH_BASE "/tools/ndk/%s:"
+			LGSH_BASE "/tools/ndk/%s/toolchains/llvm-prebuilt/linux-x86_64/bin:",
+			ndk_version, ndk_version);
+
+	/* Build tools */
+	if (get_latest_version(LGSH_BASE "/tools/build-tools", build_tools_version, sizeof(build_tools_version)) == 0)
+		snprintf(path_buf + strlen(path_buf), sizeof(path_buf) - strlen(path_buf),
+			LGSH_BASE "/tools/build-tools/%s:", build_tools_version);
+
+	/* Platform tools */
+	snprintf(path_buf + strlen(path_buf), sizeof(path_buf) - strlen(path_buf),
+		LGSH_BASE "/tools/platform-tools:");
+
+	/* Cmdline tools */
+	snprintf(path_buf + strlen(path_buf), sizeof(path_buf) - strlen(path_buf),
+		LGSH_BASE "/tools/cmdline-tools/latest/bin:");
+
+	/* CMake */
+	if (get_latest_version(LGSH_BASE "/tools/cmake", cmake_version, sizeof(cmake_version)) == 0)
+		snprintf(path_buf + strlen(path_buf), sizeof(path_buf) - strlen(path_buf),
+			LGSH_BASE "/tools/cmake/%s/bin:", cmake_version);
+
+	/* User local bin */
+	snprintf(path_buf + strlen(path_buf), sizeof(path_buf) - strlen(path_buf),
+		LGSH_BASE "/.local/bin:");
+
+	/* Default path */
+	snprintf(path_buf + strlen(path_buf), sizeof(path_buf) - strlen(path_buf),
+		DEFAULT_PATH);
+
+	setenv("PATH", path_buf, 1);
+}
+
 /* ========== Main ========== */
 int main(int argc, char *argv[])
 {
@@ -675,11 +789,23 @@ int main(int argc, char *argv[])
 	if (ret < 0)
 		return EXIT_FAILURE;
 
-	/* 6. Bind mount hosts */
-	if (bind_mount_hosts(LGSH_BASE "/.config/hosts", "/etc/hosts") < 0)
+	/* 6. Bind mount optional config files */
+	if (bind_mount_file(LGSH_BASE "/.config/hosts", "/etc/hosts") < 0)
 		return EXIT_FAILURE;
 
-	/* 7. Set UID/GID */
+	if (bind_mount_file(LGSH_BASE "/.config/resolv.conf", "/etc/resolv.conf") < 0)
+		return EXIT_FAILURE;
+
+	/* 7. Change to target directory (before setuid) */
+	if (chdir(target_path) < 0) {
+		fprintf(stderr, "Error: cannot change directory to %s\n", target_path);
+		return EXIT_FAILURE;
+	}
+
+	/* Update PWD environment variable for shells like bash */
+	setenv("PWD", target_path, 1);
+
+	/* 8. Set UID/GID */
 	if (setgid(target_gid) < 0) {
 		fprintf(stderr, "Error: cannot set GID to %d\n", target_gid);
 		return EXIT_FAILURE;
@@ -690,23 +816,42 @@ int main(int argc, char *argv[])
 		return EXIT_FAILURE;
 	}
 
-	/* 8. Setup environment */
+	/* 9. Setup environment */
 	setenv("HOME", LGSH_BASE, 1);
+	setup_environment();
 
-	if (chdir(target_path) < 0) {
-		fprintf(stderr, "Error: cannot change directory to %s\n", target_path);
-		return EXIT_FAILURE;
-	}
-
-	/* 9. Exec program */
+	/* 10. Exec program */
 	if (argc > 1) {
 		/* Use argv[1] and remaining args as the program to run */
-		execve(argv[1], &argv[1], environ);
+		execvp(argv[1], &argv[1]);
 		fprintf(stderr, "Error: cannot exec %s\n", argv[1]);
 	} else {
-		/* Default: exec tmux */
-		char *const tmux_argv[] = {"tmux", NULL};
-		execve("/usr/bin/tmux", tmux_argv, environ);
+		/* Default: exec tmux with session management */
+		char *session_name;
+		char check_cmd[PATH_MAX];
+		int session_exists;
+
+		/* Extract session name from target_path (last component) */
+		session_name = strrchr(target_path, '/');
+		if (session_name)
+			session_name++;
+		else
+			session_name = target_path;
+
+		/* Check if session already exists */
+		snprintf(check_cmd, sizeof(check_cmd),
+			"tmux has-session -t %s 2>/dev/null", session_name);
+		session_exists = (system(check_cmd) == 0);
+
+		if (session_exists) {
+			/* Attach to existing session */
+			char *const tmux_argv[] = {"tmux", "attach", "-t", session_name, NULL};
+			execvp("tmux", tmux_argv);
+		} else {
+			/* Create new session with name */
+			char *const tmux_argv[] = {"tmux", "new", "-s", session_name, NULL};
+			execvp("tmux", tmux_argv);
+		}
 		fprintf(stderr, "Error: cannot exec tmux\n");
 	}
 	return EXIT_FAILURE;
