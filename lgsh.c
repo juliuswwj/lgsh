@@ -475,6 +475,19 @@ static int verify_working_directory(void)
 	return 0;
 }
 
+/* Convert UID to a single character using 62-character set (0-9, A-Z, a-z) */
+static char uid_to_char(uid_t uid)
+{
+	unsigned int idx = (uid - 1001) % 62;
+
+	if (idx < 10)
+		return '0' + idx;           /* 0-9 */
+	else if (idx < 36)
+		return 'A' + (idx - 10);     /* A-Z */
+	else
+		return 'a' + (idx - 36);     /* a-z */
+}
+
 /* Get username from UID */
 static char *get_username(void)
 {
@@ -487,6 +500,12 @@ static char *get_username(void)
 	static char uidbuf[32];
 	snprintf(uidbuf, sizeof(uidbuf), "uid%d", uid);
 	return uidbuf;
+}
+
+/* Get short identifier from UID (single character mapped from UID) */
+static char get_uid_char(void)
+{
+	return uid_to_char(getuid());
 }
 
 /* ========== Path and mount functions (from mount.go) ========== */
@@ -502,13 +521,14 @@ static int get_target_uid_gid(const char *path, uid_t *uid, gid_t *gid)
 	return 0;
 }
 
-/* Build target path: /home/lgsh/<username>_<dirname> */
+/* Build target path: /home/lgsh/<uid_char>_<dirname> */
 static void build_target_path(char *target, size_t target_size,
 			      const char *home, const char *cwd,
-			      const char *lgsh_base, const char *username)
+			      const char *lgsh_base)
 {
 	const char *rel;
 	size_t home_len = strlen(home);
+	char uid_char = get_uid_char();
 
 	/* Get relative path from HOME */
 	if (strncmp(cwd, home, home_len) == 0 && cwd[home_len] == '/')
@@ -527,7 +547,7 @@ static void build_target_path(char *target, size_t target_size,
 		dirname = "home";
 
 	/* Build path */
-	snprintf(target, target_size, "%s/%s_%s", lgsh_base, username, dirname);
+	snprintf(target, target_size, "%s/%c%s", lgsh_base, uid_char, dirname);
 }
 
 /* Create mount namespace */
@@ -655,7 +675,7 @@ static int get_latest_version(const char *base_path, char *version_out, size_t m
 	return 0;
 }
 
-static void setup_environment(void)
+static void setup_environment(uid_t target_uid)
 {
 	char path_buf[PATH_MAX * 8];
 	char nvm_version[64];
@@ -665,9 +685,22 @@ static void setup_environment(void)
 	char nvm_bin[PATH_MAX];
 	char nvm_inc[PATH_MAX];
 	char ndk_path[PATH_MAX];
+	struct passwd *pw;
 
-	/* USER: set to 'lg' (the lgsh user) */
-	setenv("USER", "lg", 1);
+	/* USER: get username from target_uid (owner of LGSH_BASE) */
+	pw = getpwuid(target_uid);
+	if (pw) {
+		setenv("USER", pw->pw_name, 1);
+	} else {
+		/* Fallback: use basename of LGSH_BASE */
+		const char *base_name = strrchr(LGSH_BASE, '/');
+		if (base_name)
+			base_name++;  /* skip '/' */
+		else
+			base_name = LGSH_BASE;
+		setenv("USER", base_name, 1);
+	}
+
 	setenv("TZ", "America/Los_Angeles", 1);
 
 	/* NVM environment - detect version */
@@ -744,7 +777,6 @@ int main(int argc, char *argv[])
 	char cwd[PATH_MAX], home[PATH_MAX], target_path[PATH_MAX];
 	uid_t caller_uid, target_uid;
 	gid_t caller_gid, target_gid;
-	char *username;
 	int ret;
 
 	/* 1. Security checks */
@@ -773,8 +805,7 @@ int main(int argc, char *argv[])
 	}
 	strncpy(home, home_env, sizeof(home) - 1);
 
-	username = get_username();
-	build_target_path(target_path, sizeof(target_path), home, cwd, LGSH_BASE, username);
+	build_target_path(target_path, sizeof(target_path), home, cwd, LGSH_BASE);
 
 	/* 3. Get target UID/GID */
 	if (get_target_uid_gid(LGSH_BASE, &target_uid, &target_gid) < 0)
@@ -818,7 +849,7 @@ int main(int argc, char *argv[])
 
 	/* 9. Setup environment */
 	setenv("HOME", LGSH_BASE, 1);
-	setup_environment();
+	setup_environment(target_uid);
 
 	/* 10. Exec program */
 	if (argc > 1) {
@@ -826,33 +857,12 @@ int main(int argc, char *argv[])
 		execvp(argv[1], &argv[1]);
 		fprintf(stderr, "Error: cannot exec %s\n", argv[1]);
 	} else {
-		/* Default: exec tmux with session management */
-		char *session_name;
-		char check_cmd[PATH_MAX];
-		int session_exists;
-
-		/* Extract session name from target_path (last component) */
-		session_name = strrchr(target_path, '/');
-		if (session_name)
-			session_name++;
-		else
-			session_name = target_path;
-
-		/* Check if session already exists */
-		snprintf(check_cmd, sizeof(check_cmd),
-			"tmux has-session -t %s 2>/dev/null", session_name);
-		session_exists = (system(check_cmd) == 0);
-
-		if (session_exists) {
-			/* Attach to existing session */
-			char *const tmux_argv[] = {"tmux", "attach", "-t", session_name, NULL};
-			execvp("tmux", tmux_argv);
-		} else {
-			/* Create new session with name */
-			char *const tmux_argv[] = {"tmux", "new", "-s", session_name, NULL};
-			execvp("tmux", tmux_argv);
-		}
-		fprintf(stderr, "Error: cannot exec tmux\n");
+		/* Default: exec bash */
+		char *shell = getenv("SHELL");
+		if (!shell)
+			shell = "/bin/bash";
+		execlp(shell, shell, NULL);
+		fprintf(stderr, "Error: cannot exec %s\n", shell);
 	}
 	return EXIT_FAILURE;
 }

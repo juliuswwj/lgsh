@@ -58,13 +58,13 @@ sudo chmod 4750 lgsh
 
 | 变量 | 说明 |
 |------|------|
-| `HOME` | `/home/lgsh` |
-| `USER` | `lg` |
+| `HOME` | `<LGSH_BASE>`（默认 `/home/lgsh`） |
+| `USER` | 从 `LGSH_BASE` 目录 owner UID 反查用户名，失败则回退到 `LGSH_BASE` 的 basename（如 `lgsh`） |
 | `TZ` | `America/Los_Angeles`（自动处理夏令时） |
-| `NVM_DIR` | `/home/lgsh/.nvm` |
+| `NVM_DIR` | `<LGSH_BASE>/.nvm` |
 | `NVM_BIN` | 最新 Node.js 的 bin 目录 |
 | `NVM_INC` | 最新 Node.js 的 include 目录 |
-| `VIRTUAL_ENV` | `/home/lgsh/miniconda3` |
+| `VIRTUAL_ENV` | `<LGSH_BASE>/miniconda3` |
 | `ANDROID_NDK_HOME` | 最新 NDK 目录 |
 | `NDK_ROOT` | 最新 NDK 目录 |
 | `NDK_PROJECT_PATH` | 最新 NDK 目录 |
@@ -74,15 +74,15 @@ sudo chmod 4750 lgsh
 ### PATH 顺序
 
 ```
-/home/lgsh/miniconda3/bin
-/home/lgsh/.nvm/versions/node/<最新版>/bin
-/home/lgsh/tools/ndk/<最新版>
-/home/lgsh/tools/ndk/<最新版>/toolchains/llvm-prebuilt/linux-x86_64/bin
-/home/lgsh/tools/build-tools/<最新版>
-/home/lgsh/tools/platform-tools
-/home/lgsh/tools/cmdline-tools/latest/bin
-/home/lgsh/tools/cmake/<最新版>/bin
-/home/lgsh/.local/bin
+<LGSH_BASE>/miniconda3/bin
+<LGSH_BASE>/.nvm/versions/node/<最新版>/bin
+<LGSH_BASE>/tools/ndk/<最新版>
+<LGSH_BASE>/tools/ndk/<最新版>/toolchains/llvm-prebuilt/linux-x86_64/bin
+<LGSH_BASE>/tools/build-tools/<最新版>
+<LGSH_BASE>/tools/platform-tools
+<LGSH_BASE>/tools/cmdline-tools/latest/bin
+<LGSH_BASE>/tools/cmake/<最新版>/bin
+<LGSH_BASE>/.local/bin
 /usr/local/cuda/bin
 /usr/local/bin
 /usr/bin
@@ -95,22 +95,14 @@ sudo chmod 4750 lgsh
 从 `$HOME` 的子目录中运行：
 
 ```sh
-# 默认：启动 tmux（自动 attach 或 create session）
+# 默认：启动 $SHELL（或 /bin/bash）
 lgsh
 
 # 运行指定程序（支持 PATH 搜索，无需全路径）
-lgsh bash
 lgsh vim file.txt
 lgsh python
+lgsh zsh
 ```
-
-### tmux session 管理
-
-默认模式下，程序会自动管理 tmux session：
-
-- session 名称：`<用户名>_<目录名>`（从工作目录提取）
-- 如果 session 已存在 → `tmux attach`
-- 如果 session 不存在 → `tmux new -s <名称>`
 
 ## 工作原理
 
@@ -126,12 +118,12 @@ lgsh python
 
 3. **ID 映射挂载**
    - 克隆当前工作目录
-   - 应用 UID/GID 映射：调用者 ID → 目标 ID（来自 `/home/lgsh` 的所有权）
-   - 挂载到 `/home/lgsh/<用户名>_<目录名>`
+   - 应用 UID/GID 映射：调用者 ID → 目标 ID（来自 `LGSH_BASE` 的所有权）
+   - 挂载到 `<LGSH_BASE>/<用户名>_<目录名>`
 
 4. **配置挂载**
-   - 可选绑定挂载 `/home/lgsh/.config/hosts` → `/etc/hosts`
-   - 可选绑定挂载 `/home/lgsh/.config/resolv.conf` → `/etc/resolv.conf`
+   - 可选绑定挂载 `<LGSH_BASE>/.config/hosts` → `/etc/hosts`
+   - 可选绑定挂载 `<LGSH_BASE>/.config/resolv.conf` → `/etc/resolv.conf`
 
 5. **目录切换与降权**
    - 切换到映射后的目录（root 权限下）
@@ -139,12 +131,14 @@ lgsh python
    - 降权为目标 UID/GID
 
 6. **环境设置**
-   - 设置 HOME、USER、TZ 等环境变量
+   - 设置 HOME 为 `LGSH_BASE`
+   - 通过 `LGSH_BASE` 目录的 owner UID 反查用户名设置 USER（失败则用 basename）
+   - 设置 TZ 等环境变量
    - 动态检测工具版本并设置相关环境变量
    - 构建 PATH
 
 7. **执行程序**
-   - 运行指定程序或默认的 tmux
+   - 运行指定程序或默认 shell（$SHELL 或 /bin/bash）
 
 ## 安全措施
 
